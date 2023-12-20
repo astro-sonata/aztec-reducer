@@ -56,9 +56,18 @@ class Bok(Telescope):
         # so now we can just start reducing!
 
         # first just extract the 1d spectrum of the science case
-        targ_1d = super().extract_1d(self.science_red.data, debug=debug, **self.PROPS)
-
-        # then perform the wave solution
-        wave = super().wavelength_solver(self.arc_red.data, debug=debug, **self.PROPS)
+        spec1d = super().extract_1d(self.science_red.data, debug=debug, **self.PROPS)
+        stan1d = super().extract_1d(self.stan_red.data, debug=debug, **self.PROPS)
+        arc1d = super().extract_1d(self.arc_red.data, arc=True,
+                                   background_subtract=False, debug=debug, **self.PROPS)
         
-        return wave, targ_1d
+        # then perform the wave solution
+        wave = super().wavelength_solver(arc1d, debug=debug, **self.PROPS)
+
+        # finally perform the flux calibration
+        flux = super().calibrate_flux(wave, spec1d, stan1d, self.standard_name,
+                                      self.standard_dir, debug=debug, **self.PROPS)
+        
+        
+        return wave, flux
+    

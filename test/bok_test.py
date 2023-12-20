@@ -15,7 +15,7 @@ def main():
     args = p.parse_args()
     
     obj_name = args.obj #'sn2023tpl' #'at2019qiz'
-    standard_name = 'feige'
+    standard_name = 'feige110'
     datadir = os.path.join(os.path.dirname(os.path.dirname(os.getcwd())), 'bok', '2023Dec14')
 
     bok_data = Bok(datadir, obj_name, standard_name)
@@ -23,7 +23,7 @@ def main():
     
     fig, ax = plt.subplots(figsize=(18,6))
     ax.plot(wave, spec1d)
-    ax.set_ylabel('Flux [e- count]')
+    ax.set_ylabel(f'Flux [{spec1d.unit}]')
     ax.set_xlabel(r'Wavelength [$\AA$]')
     fig.savefig('reduced_spectrum.png')
     

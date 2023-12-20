@@ -3,19 +3,23 @@ Superclass with most of the general code for the reduction pipelines
 '''
 
 import os, glob
+import inspect
 from copy import deepcopy
+from subprocess import run
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 
 from scipy.signal import find_peaks
+from scipy.interpolate import interp1d
 
 from rascal.calibrator import Calibrator
 from rascal.atlas import Atlas
 from rascal.util import refine_peaks
 
 from astropy.io import fits
+from astropy.io import ascii
 import astropy.units as u
 from astropy.nddata import CCDData
 from astropy.modeling.polynomial import Polynomial1D
@@ -49,13 +53,18 @@ class Telescope(object):
         # we don't care about where it was exactly
         science = glob.glob(os.path.join(datadir, obj_name, '*.fits')) # science image files
         flats = glob.glob(os.path.join(datadir, 'flats', '*.fits')) # flat image files
-        standard = glob.glob(os.path.join(datadir, 'feige', '*.fits')) # standard star image files
+        standard = glob.glob(os.path.join(datadir, standard_name, '*.fits')) # standard star image files
         zeros = glob.glob(os.path.join(datadir, 'zero', '*.fits')) # Zero images
 
-        if not all([os.path.exists(p) for p in science]):
+        filelists = [science, flats, standard, zeros]
+        if any(not os.path.exists(p) for filelist in filelists for p in filelist):
             raise ValueError(f'{obj_name} not in {datadir}!')
 
-        print(science)
+        self.datadir = datadir
+        self.standard_name = standard_name
+        self.obj_name = obj_name
+        self.curr_dir = os.path.dirname(inspect.getfile(inspect.currentframe()))
+        self.standard_dir = os.path.join(self.curr_dir, 'standards')
         
         self.spectra2d = self._read_imgs(science[1:], debug=debug)
         self.arc2d = self._read_imgs([science[0]], debug=debug)
@@ -277,7 +286,7 @@ class Telescope(object):
 
         # then we extract the trace profile
         width = cls.extract_trace_profile(spec, poly, center, debug=debug, **kwargs)
-
+        
         print(len(xvals))
         # then extract the 1d spectrum
         print(spec[int(center[0])-width:int(center[0])+width, :].shape)
@@ -291,7 +300,7 @@ class Telescope(object):
         return spectrum1d
 
     @classmethod
-    def wavelength_solver(cls, arc, element_list, min_wave, max_wave,
+    def wavelength_solver(cls, arc1d, element_list, min_wave, max_wave,
                           tol=100, nbins=200, max_tries=500,
                           line_brightness=0.001, dist=100, debug=False, **extras):
         '''
@@ -325,12 +334,6 @@ class Telescope(object):
             The wavelength array for the spectrum. This is the same length as the x length
             of the input arc.        
         '''
-
-        # extract a 1d crossection from the arc data
-        if debug:
-            print('Extracting the 1D spectrum...')
-
-        arc1d = cls.extract_1d(arc, arc=True, background_subtract=False, debug=False)
 
         # Now following from https://rascal.readthedocs.io/en/latest/tutorial/keck-deimos.html
         peaks, _ = find_peaks(arc1d, prominence=1/line_brightness, distance=dist) #**kwargs)
@@ -400,3 +403,82 @@ class Telescope(object):
             c.plot_search_space(save_fig=True, filename='wave_fit_search_space.png');
 
         return wave
+
+    @staticmethod
+    def get_standard(standard_dir, standard_name, **extras):
+        '''
+        Find the standard star file corresponding to standaed_name
+        '''
+
+        filename_table = ascii.read(os.path.join(standard_dir, 'calspec_names.csv'))
+
+        filenames = filename_table['current_calspec']
+        targnames = np.array([name.split('_')[0] for name in filenames])
+
+        forglob = os.path.join(standard_dir, '*.fits')
+        curr_standards = [os.path.basename(f) for f in glob.glob(forglob)]
+
+        # find the filename of the standard
+        whereFile = np.where(standard_name.lower() == targnames)[0]
+        if len(whereFile) == 0:
+            raise ValueError('We do not have access to this standard star! Please contact the developers!')
+
+        filename = filenames[whereFile[0]]
+
+        if filename not in curr_standards:
+            # then we need to download it!
+            cmd = f'wget -P {standard_dir} https://archive.stsci.edu/hlsps/reference-atlases/cdbs/current_calspec/{filename}'
+            run(cmd, shell=True)
+
+        return filename
+
+    @classmethod
+    def calibrate_flux(cls, wave, spec_obs, stand_obs, standard_name, standard_dir,
+                       min_wave, max_wave, debug=False, **extras):
+        '''
+        Calibrate the flux using the standard star
+
+        Args:
+            wave [np.array] : calibrated wavelength array
+            spec_obs [np.array]: observed flux in counts
+            stand_obs [np.array]: observed flux for the standard star
+            standard_name [str]: name of the standard star
+            standard_dir [str]: directory with the standard file
+            min_wave [float]: Minimum wavelength for the filter used
+            max_wave [float]: maxmimum wavelength for the filter used
+            debug [bool]: If true prints some debug text and plots
+        
+        Returns:
+            A numpy array with the calibrated flux, the same length as the input wave
+        '''
+        filename = cls.get_standard(standard_dir, standard_name)
+
+        stand = fits.open(os.path.join(standard_dir, filename))
+
+        stand_flux = stand['SCI'].data['FLUX']
+        stand_wave = stand['SCI'].data['WAVELENGTH']
+
+        whereFilt = np.where((stand_wave > min_wave) * (stand_wave < max_wave))[0]
+
+        if debug:
+            plt.plot(stand_wave[whereFilt], stand_flux[whereFilt])
+
+        # interpolate stand_flux is the same length as stand1d
+        bestfit = interp1d(stand_wave, stand_flux)
+        stand_interp = bestfit(wave)
+
+        if debug:
+            plt.plot(wave, stand_interp)
+
+        # let's introduce units to make sure this is okay
+        stand_obs = stand_obs*u.count
+        stand = stand_interp*u.erg/u.cm**2/u.s
+        flux_obs = spec_obs.data*u.count
+
+        flux = flux_obs * stand / stand_obs
+
+        if debug:
+            plt.figure()
+            plt.plot(wave, flux)
+
+        return flux
