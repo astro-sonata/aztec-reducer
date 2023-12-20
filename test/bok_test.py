@@ -2,7 +2,7 @@
 A command line wrapper for bok testing
 '''
 import os
-from sonata_reducer import Bok
+from sonatapy import Bok
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
