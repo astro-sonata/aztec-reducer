@@ -5,4 +5,6 @@ from ._version import __version__
 __package__ = "sonatapy"
 
 # import important stuff
+from . import pipelines
+from .exceptions import *
 from .bok import Bok

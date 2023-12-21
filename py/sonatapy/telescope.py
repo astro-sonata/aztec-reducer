@@ -6,6 +6,7 @@ import os, glob
 import inspect
 from copy import deepcopy
 from subprocess import run
+from warnings import warn
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,6 +21,7 @@ from rascal.util import refine_peaks
 
 from astropy.io import fits
 from astropy.io import ascii
+from astropy.table import Table
 import astropy.units as u
 from astropy.nddata import CCDData
 from astropy.modeling.polynomial import Polynomial1D
@@ -27,6 +29,8 @@ from astropy.modeling.fitting import LinearLSQFitter
 from astropy.modeling.models import Gaussian1D
 from astropy.modeling.fitting import LevMarLSQFitter
 import ccdproc
+
+from .exceptions import *
 
 class Telescope(object):
 
@@ -56,10 +60,12 @@ class Telescope(object):
         standard = glob.glob(os.path.join(datadir, standard_name, '*.fits')) # standard star image files
         zeros = glob.glob(os.path.join(datadir, 'zero', '*.fits')) # Zero images
 
-        filelists = [science, flats, standard, zeros]
-        if any(not os.path.exists(p) for filelist in filelists for p in filelist):
-            raise ValueError(f'{obj_name} not in {datadir}!')
-
+        # check that none of these file lists are empty
+        # Note: we split up science because the first should always be the arc
+        filelists = [science[0], science[1:], flats, standard, zeros]
+        if any(len(f)==0 for f in filelists):
+            raise MissingDataException(f'Missing a at least some of the files, can not reduce {obj_name}!')
+            
         self.datadir = datadir
         self.standard_name = standard_name
         self.obj_name = obj_name
@@ -71,10 +77,57 @@ class Telescope(object):
         self.flat2d = self._read_imgs(flats, debug=debug)
         self.zero2d = self._read_imgs(zeros, debug=debug)
         self.stan2d = self._read_imgs(standard, debug=debug)
-
+        
         # reduce the spectra using the flats and zeros
         # this shouldn't change between telescopes
-        self._process()  
+        self._process()
+
+        # the calibrated values
+        self.wave = None
+        self.flux = None
+
+    def to_fits(self, fitsfile, overwrite=False):
+        '''
+        Writes the raw and calibrated data to a single file names by the obj_name
+        
+        The output file has the following HDUs by index:
+        0: The fully reduced and flux calibrated data were the 0th column is the wavelength
+           and the 1st column is the calibrated flux
+        1: The zero and flat corrected 2D target spectrum
+        2: The zero and flat corrected 2D Arc spectrum
+        3: The zero and flat corrected 2D Standard spectrum
+        4: The raw stacked 2D target spectrum
+        5: The raw stacked 2D Arc spectrum
+        6: The raw stacked 2D standard spectrum
+        7: The raw stacked 2D Flat spectrum
+        8: The raw stacked 2D Zero spectrum
+
+        Args:
+            fitsfile [str]: The path to the output 
+            overwrite [bool]: Should we overwrite existing files
+        '''
+        
+        if self.wave is None or self.flux is None:
+            raise ValueError('No reason to write a new file! We havent calibrated the data yet!')
+
+        # save the fully reduced data
+        hdus = [fits.PrimaryHDU(np.stack([self.wave, self.flux.value]))]
+
+        # save the 1D reduced but not calibrated data
+        hdus.append(fits.ImageHDU(self.science_red))
+        hdus.append(fits.ImageHDU(self.arc_red))
+        hdus.append(fits.ImageHDU(self.stan_red))
+        
+        # save the other raw images as ImageHDUs
+        hdus.append(fits.ImageHDU(self.spectra2d))
+        hdus.append(fits.ImageHDU(self.arc2d))
+        hdus.append(fits.ImageHDU(self.stan2d))
+        hdus.append(fits.ImageHDU(self.flat2d))
+        hdus.append(fits.ImageHDU(self.zero2d))
+
+        # convert to a fits file
+        hdulist = fits.HDUList(hdus)
+        hdulist.writeto(fitsfile, overwrite=overwrite)
         
     def _read_imgs(self, fitslist, method='average', debug=False, min_trim=40,
                   max_trim=1200, **kwargs
@@ -85,7 +138,6 @@ class Telescope(object):
         debug [bool]: if true plot some debug plots
         **kwargs: Any other arguments to pass to ccdproc.combine
         '''
-
         spectra2d = ccdproc.combine(fitslist, method=method, unit=u.count, sigma_clip=True, 
                                     sigma_clip_low_thresh=5, sigma_clip_high_thresh=5,
                                     sigma_clip_func=np.ma.median, mem_limit=350e6
@@ -336,7 +388,21 @@ class Telescope(object):
         '''
 
         # Now following from https://rascal.readthedocs.io/en/latest/tutorial/keck-deimos.html
-        peaks, _ = find_peaks(arc1d, prominence=1/line_brightness, distance=dist) #**kwargs)
+        peaks = []
+        try_idx = 0
+        while len(peaks) < 3:
+            print(line_brightness)
+            peaks, _ = find_peaks(arc1d, prominence=1/line_brightness, distance=dist) #**kwargs)
+
+            if len(peaks) < 3:
+                line_brightness *= 10
+                warn('Not enough peaks found, reducing line_brightness by a factor of 10!')
+
+            if try_idx > max_tries//10:
+                raise FitFailed('Not enough peaks found and max_tries/10 exceeded!')
+                
+            try_idx += 1
+            
         peaks_refined = refine_peaks(arc1d, peaks, window_width=3)
 
         # construct the calibrator and set hyperparams of the transform
@@ -368,6 +434,7 @@ class Telescope(object):
 
         if debug:
             print('Performing the hough transform...')
+
         c.do_hough_transform()
 
         if debug:
@@ -378,7 +445,7 @@ class Telescope(object):
         # Order of fit_out:
         # fit_coeff, matched_peaks, matched_atlas, rms, residual, peak_util, atlas_util
         fit_out = c.fit(max_tries=500)
-
+            
         # extract the wavelength array
         fit_coeff = fit_out[0]
         wave = c.polyval(c.pixel_list, fit_coeff)

@@ -19,7 +19,9 @@ def main():
     datadir = os.path.join(os.path.dirname(os.path.dirname(os.getcwd())), 'bok', '2023Dec14')
 
     bok_data = Bok(datadir, obj_name, standard_name)
-    wave, spec1d = bok_data.reduce_data(debug=True)
+    outfile, wave, spec1d = bok_data.reduce_data(debug=True)
+
+    print(f'Writing to {outfile}')
     
     fig, ax = plt.subplots(figsize=(18,6))
     ax.plot(wave, spec1d)

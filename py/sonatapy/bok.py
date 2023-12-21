@@ -1,7 +1,8 @@
 '''
 Subclass of Telescope, specifically for Bok
 '''
-
+import os
+from astropy.io import fits
 from .telescope import Telescope
 
 class Bok(Telescope):
@@ -47,7 +48,7 @@ class Bok(Telescope):
         )
         
         
-    def reduce_data(self, debug=False):
+    def reduce_data(self, overwrite=False, debug=False):
         '''
         Reduce data from the Bok Telescope
         '''
@@ -62,12 +63,22 @@ class Bok(Telescope):
                                    background_subtract=False, debug=debug, **self.PROPS)
         
         # then perform the wave solution
-        wave = super().wavelength_solver(arc1d, debug=debug, **self.PROPS)
+        self.wave = super().wavelength_solver(arc1d, debug=debug, **self.PROPS)
 
         # finally perform the flux calibration
-        flux = super().calibrate_flux(wave, spec1d, stan1d, self.standard_name,
-                                      self.standard_dir, debug=debug, **self.PROPS)
+        self.flux = super().calibrate_flux(self.wave, spec1d, stan1d,
+                                           self.standard_name, self.standard_dir,
+                                           debug=debug, **self.PROPS)
         
+        # write to a fits file
+        # define and make the output directory
+        outdir = os.path.join(self.datadir, 'reduced')
+        if not os.path.exists(outdir):
+            os.mkdir(outdir)
+        outpath = os.path.join(outdir, f'{self.obj_name}-reduced.fits')
+
+        # open the file
+        print(f'Writing to {outpath}')
+        self.to_fits(outpath, overwrite=overwrite)
         
-        return wave, flux
-    
+        return outpath, self.wave, self.flux
