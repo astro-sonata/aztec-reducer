@@ -1,12 +1,12 @@
-# sonata-reducer
+# aztec-reducer
 
-Reduction pipelines for SONATA. Currently the only one developed
+Reduction pipelines/code for the SONATA AZTEC observing program. Currently the only one developed
 is for Bok.
 
 ### Installation
 To install for running the pipeline run the following commands
 ```
-git clone https://github.com/noahfranz13/sonatapy.git
+git clone https://github.com/astro-otter/aztec-reducer.git
 cd sonatapy
 pip install .
 ```
